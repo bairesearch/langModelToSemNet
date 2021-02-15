@@ -11,6 +11,7 @@ conda install -c pytorch pytorch=1.7
 pip install pytorch-transformers
 pip install transformers
 pip install nltk
+pip install pattern
 
 # License:
 MIT License
@@ -37,131 +38,217 @@ from nltk.tokenize.treebank import TreebankWordDetokenizer
 from nltk.corpus import wordnet as wn
 import numpy as np
 
+from pattern.en import conjugate, lemma, lexeme
+import pattern.en as pattern
+
 tok = AutoTokenizer.from_pretrained("bert-base-cased")
 bert = BertForMaskedLM.from_pretrained("bert-base-cased")
+
+
+
+testHarness = True
+saveTopPredictionsOnly = True
+
+saveMaskProbabilities = True
+printInputText = True
+addMaskProbabilitiesToSemanticNet = False	#not yet coded
+topPredictionsNumber = 1000
+
+feedMultipleInstanceRelationshipVerbForms = True
+feedMultipleInstanceSubjectObjectDeterminerForms = True
+feedMultipleInstanceRelationshipPrepositionAuxiliaryForms = True
+feedExplicitConceptsForms = True
+if(feedMultipleInstanceRelationshipVerbForms):
+	instanceRelationshipVerbTenseFormList = [pattern.PRESENT, pattern.PAST]	#rides, rode, [NOT: will ride] 
+else:
+	instanceRelationshipVerbTenseFormList = [pattern.PRESENT]	#eg. the dog eats the pie
+if(feedMultipleInstanceSubjectObjectDeterminerForms):
+	instanceSubjectObjectDeterminerList = ["the", "a"]
+else:
+	instanceSubjectObjectDeterminerList = ["the"]	
+instanceRelationshipPrepositionAuxiliary = "be"
+if(feedMultipleInstanceRelationshipPrepositionAuxiliaryForms):
+	instanceRelationshipPrepositionAuxiliaryFormList = [pattern.PRESENT, pattern.PAST]	#is, was, [NOT: will be] 
+else:
+	instanceRelationshipPrepositionAuxiliaryFormList = [pattern.PRESENT]	#"is"
+
+if(feedExplicitConceptsForms):
+	conceptRelationshipVerbTenseForm = pattern.INFINITIVE	#dogs eat pies
+	conceptSubjectObjectNumberForm = pattern.PLURAL	#dogs eat pies
+
+
+if(saveMaskProbabilities):
+	saveInputTextSummary = True
+	firstLineHeader = True
+	maskProbabilitiesTextFileName = "maskProbabilitiesTextFile.txt"
+	maskProbabilitiesTextFileDelimiter = ","	#csv format
+	maskProbabilitiesTextFile = open(maskProbabilitiesTextFileName, "w")
+
+predictionIndexSubject = "subject"
+predictionIndexRelationship = "relationship"
+predictionIndexObject = "object"
+numberOfPredictionIndices = 3	#number of masks #subject, relationship, object
+
 
 def mainFunction():
 
 	#constructs tuples from noun/verb dictionary and finds probability of their associations using pretrained bert
-	
-	testHarness = True
-	saveTopPredictionsOnly = True
-	
-	saveMaskProbabilities = True
-	printInputText = True
-	addMaskProbabilitiesToSemanticNet = False	#not yet coded
-	topPredictionsNumber = 1000
-	
-	if(saveMaskProbabilities):
-		saveInputTextSummary = True
-		firstLineHeader = True
-		maskProbabilitiesTextFileName = "maskProbabilitiesTextFile.txt"
-		maskProbabilitiesTextFileDelimiter = ","	#csv format
-		maskProbabilitiesTextFile = open(maskProbabilitiesTextFileName, "w")
+
 	
 	nounList, verbList, prepositionList = createWordLists()	#createLemmaLists()
 
-	predictionIndexSubject = "subject"
-	predictionIndexRelationship = "relationship"
-	predictionIndexObject = "object"
-	numberOfPredictionIndices = 3	#number of masks #subject, relationship, object
 
 	if(testHarness):
 		subjectList = ["dog"]
-		relationshipList = ["eats"]
+		verbList = ["eat"]
 		objectList = nounList
 		predictionIndices = [predictionIndexObject]
 	else:
 		subjectList = nounList
-		relationshipList = verbList + prepositionList
 		objectList = nounList
 		predictionIndices = [predictionIndexSubject, predictionIndexRelationship, predictionIndexObject]
-	
-	addDeterminers = True #adds "the/a" to nouns
-	addAuxiliary = False	#adds "is" to verb/preposition
-	determinerText = "the"
-	auxiliaryText = "is"
-			
+
 	tupleTriplets = []
 	
 	for predictionIndex in predictionIndices:
 		
 		subjectListPrediction = subjectList
-		relationshipListPrediction = relationshipList
+		verbListPrediction = verbList
+		prepositionListPrediction = prepositionList
 		objectListPrediction = objectList
 		
 		if(predictionIndex == predictionIndexSubject):
 			subjectListPrediction = ["NA"]
 		elif(predictionIndex == predictionIndexRelationship):
-			relationshipListPrediction = ["NA"]
+			verbListPrediction = ["NA"]
+			prepositionListPrediction = ["NA"]
 		elif(predictionIndex == predictionIndexObject):
 			objectListPrediction = ["NA"]
+			
+		if(testHarness):
+			prepositionListPrediction = []
 		
 		for i1, w1 in enumerate(subjectListPrediction):	#subject
-			for i2, w2 in enumerate(relationshipListPrediction):	#relationship
-				for i3, w3 in enumerate(objectListPrediction):	#object
+			for i3, w3 in enumerate(objectListPrediction):	#object
 
-					#if(i3 != i1):	#optional (do not allow relationships with identical subject and object)
+				w1morph = w1
+				w3morph = w3
+									
+				#explicit instances;
+				for i2, w2 in enumerate(verbListPrediction):	#relationship
+					w2morph = w2
+					for instanceSubjectObjectDeterminer in instanceSubjectObjectDeterminerList:
+						determinerText = instanceSubjectObjectDeterminer
+						for verbForm in instanceRelationshipVerbTenseFormList:
+							w2morph = convertVerbForm(w2, verbForm, subjectNumber=pattern.SINGULAR)
+							getMaskPossibilities(w1, w2, w3, w1morph, w2morph, w3morph, predictionIndex, explicitConcept=False, addDeterminers=True, determinerText=determinerText)
+				for i2, w2 in enumerate(prepositionListPrediction):	#relationship
+					w2morph = w2
+					for instanceSubjectObjectDeterminer in instanceSubjectObjectDeterminerList:
+						determinerText = instanceSubjectObjectDeterminer
+						for instanceRelationshipPrepositionAuxiliaryForm in instanceRelationshipPrepositionAuxiliaryFormList:
+							auxiliaryText = convertVerbForm(instanceRelationshipPrepositionAuxiliary, instanceRelationshipPrepositionAuxiliaryForm, subjectNumber=pattern.SINGULAR)
+							getMaskPossibilities(w1, w2, w3, w1morph, w2morph, w3morph, predictionIndex, explicitConcept=False, addDeterminers=True, determinerText=determinerText, addAuxiliary=True, auxiliaryText=auxiliaryText)	
+				
+				#explicit concepts;		
+				if(feedExplicitConceptsForms):
+					for i2, w2 in enumerate(verbListPrediction):	#relationship
+						w2morph = w2
+						if(conceptRelationshipVerbTenseForm == pattern.INFINITIVE):
+							w2morph = convertVerbForm(w2, pattern.INFINITIVE, subjectNumber=pattern.SINGULAR)
+						if(conceptSubjectObjectNumberForm == pattern.PLURAL):
+							w1morph = convertNounPlural(w1)
+							w3morph =  convertNounPlural(w3)
+						getMaskPossibilities(w1, w2, w3, w1morph, w2morph, w3morph, predictionIndex, explicitConcept=True)							
 
-					subjectText = w1 + " "
-					relationshipText = w2 + " "
-					objectText = w3
+def convertVerbForm(verbInfinitive, verbForm, subjectNumber):	#pattern.SG
+	wordMorp = (conjugate(verb=verbInfinitive,tense=verbForm,number=subjectNumber))
+	return wordMorp
 
-					startTextToken = nltk.word_tokenize(subjectText)
-					relationshipTextToken = nltk.word_tokenize(relationshipText)
-					objectTextToken = nltk.word_tokenize(objectText)
+def convertNounPlural(nounSingular):
+	nounMorp = pattern.pluralize(nounSingular)
+	return nounMorp
 
-					if((len(startTextToken) == 1) and (len(relationshipTextToken) == 1) and (len(objectTextToken) == 1)):
-
-						if(addDeterminers):
-							subjectText = determinerText + " " + subjectText
-							objectText = determinerText + " " + objectText
-						if(addAuxiliary):
-							relationshipText = auxiliaryText + " " + relationshipText
-
-						startTextTokens = nltk.word_tokenize(subjectText)
-						relationshipTextTokens = nltk.word_tokenize(relationshipText)
-						objectTextTokens = nltk.word_tokenize(objectText)
-
-						if(predictionIndex == predictionIndexSubject):
-							endText = relationshipText + objectText
-							inputText = f"{tok.mask_token} {endText}."
-							maskIndex = 0
-						elif(predictionIndex == predictionIndexRelationship):
-							startText = subjectText
-							endText = objectText
-							inputText = f"{startText} {tok.mask_token} {endText}."
-							maskIndex = len(startTextTokens)
-						elif(predictionIndex == predictionIndexObject):
-							startText = subjectText + relationshipText
-							inputText = f"{startText} {tok.mask_token}."
-							maskIndex = len(startTextTokens)
-							
-						inputTextSummary = inputText.replace(" ", "_")
-						
-						if(printInputText):
-							print(inputText)
-
-						predictionProbabilities, headerList = getProbabilitiesOfMaskedWord(inputText, maskIndex, firstLineHeader, saveTopPredictionsOnly, topPredictionsNumber)
-
-						if(addMaskProbabilitiesToSemanticNet):
-							addTuplesToSemanticNet(predictionProbabilities, subjectText, relationshipText, objectText)
-						
-						if(saveMaskProbabilities):
-							addMaskProbabilitiesToFile(maskProbabilitiesTextFile, predictionProbabilities, maskProbabilitiesTextFileDelimiter, firstLineHeader, headerList, saveInputTextSummary, inputTextSummary)
-
-						if(firstLineHeader):
-							if(not saveTopPredictionsOnly):
-								firstLineHeader = False
-										
 	
+def getMaskPossibilities(w1, w2, w3, w1morph, w2morph, w3morph, predictionIndex, explicitConcept, addDeterminers=False, determinerText=None, addAuxiliary=False, auxiliaryText=None):
+
+	global firstLineHeader
 	
+	#if(i3 != i1):	#optional (do not allow relationships with identical subject and object)
+
+	subjectText = w1morph
+	relationshipText = w2morph
+	objectText = w3morph
+
+	startTextToken = nltk.word_tokenize(subjectText)
+	relationshipTextToken = nltk.word_tokenize(relationshipText)
+	objectTextToken = nltk.word_tokenize(objectText)
+
+	if((len(startTextToken) == 1) and (len(relationshipTextToken) == 1) and (len(objectTextToken) == 1)):	#currently only allow single-word subject/relationship/objects
+
+		subjectTextContextual = subjectText
+		relationshipTextContextual = relationshipText
+		objectTextContextual = objectText
+		
+		if(addDeterminers):
+			subjectTextContextual = determinerText + " " + subjectText
+			objectTextContextual = determinerText + " " + objectText
+		if(addAuxiliary):
+			relationshipTextContextual = auxiliaryText + " " + relationshipText
+
+		startTextContextualTokens = nltk.word_tokenize(subjectTextContextual)
+		relationshipTextContextualTokens = nltk.word_tokenize(relationshipTextContextual)
+		objectTextContextualTokens = nltk.word_tokenize(objectTextContextual)
+
+		if(predictionIndex == predictionIndexSubject):
+			endText = relationshipTextContextual + " " + objectTextContextual
+			inputText = f"{tok.mask_token} {endText}."
+			maskIndex = 0
+			#subjectText = tok.mask_token
+			w1 = tok.mask_token
+		elif(predictionIndex == predictionIndexRelationship):
+			startText = subjectTextContextual
+			endText = objectTextContextual
+			inputText = f"{startText} {tok.mask_token} {endText}."
+			maskIndex = len(startTextContextualTokens)
+			#relationshipText = tok.mask_token
+			w2 = tok.mask_token
+		elif(predictionIndex == predictionIndexObject):
+			startText = subjectTextContextual + " " + relationshipTextContextual
+			inputText = f"{startText} {tok.mask_token}."
+			maskIndex = len(startTextContextualTokens)
+			#objectText = tok.mask_token
+			w3 = tok.mask_token
+
+		if(printInputText):
+			print("inputText = ", inputText)
+
+		predictionProbabilities, headerList = getProbabilitiesOfMaskedWord(inputText, maskIndex, firstLineHeader, saveTopPredictionsOnly, topPredictionsNumber)
+
+		if(addMaskProbabilitiesToSemanticNet):
+			#addTuplesToSemanticNet(predictionProbabilities, subjectText, relationshipText, objectText)
+			addTuplesToSemanticNet(predictionProbabilities, w1, w2, w3)	#semantic dependency relations are defined by lemmas/infinitive
+
+		#inputTextSummary = inputText.replace(" ", "_")
+		#inputTextSummary = "(" + subjectText + " " + relationshipText + " " + objectText + ")"
+		inputTextSummary = "(" + w1 + " " + w2 + " " + w3 + ")"	#semantic dependency relations are defined by lemmas/infinitive
+		if(printInputText):
+			print("inputTextSummary = ", inputTextSummary)
+		
+		if(saveMaskProbabilities):
+			addMaskProbabilitiesToFile(maskProbabilitiesTextFile, predictionProbabilities, maskProbabilitiesTextFileDelimiter, firstLineHeader, headerList, saveInputTextSummary, inputTextSummary)
+
+		if(firstLineHeader):
+			if(not saveTopPredictionsOnly):
+				firstLineHeader = False
+
+								
 def addMaskProbabilitiesToFile(maskProbabilitiesTextFile, predictionProbabilities, maskProbabilitiesTextFileDelimiter, firstLineHeader, headerList, saveInputTextSummary, inputTextSummary):
 
 	if(firstLineHeader):
 		predictionProbabilitiesTextFileLine = ""
 		if(saveInputTextSummary):
-			predictionProbabilitiesTextFileLine = predictionProbabilitiesTextFileLine + maskProbabilitiesTextFileDelimiter
+			predictionProbabilitiesTextFileLine = predictionProbabilitiesTextFileLine + inputTextSummary + maskProbabilitiesTextFileDelimiter
 		for predictedWord in headerList:
 			predictionProbabilitiesTextFileLine = predictionProbabilitiesTextFileLine + predictedWord + maskProbabilitiesTextFileDelimiter
 		#predictionProbabilitiesTextFileLine = predictionProbabilitiesTextFileLine + "\n"
